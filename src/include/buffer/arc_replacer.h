@@ -29,13 +29,22 @@ enum class AccessType { Unknown = 0, Lookup, Scan, Index };
 enum class ArcStatus { MRU, MFU, MRU_GHOST, MFU_GHOST };
 
 // TODO(student): You can modify or remove this struct as you like.
-struct FrameStatus {
+struct LiveEntry {
   page_id_t page_id_;
-  frame_id_t frame_id_;
   bool evictable_;
   ArcStatus arc_status_;
-  FrameStatus(page_id_t pid, frame_id_t fid, bool ev, ArcStatus st)
-      : page_id_(pid), frame_id_(fid), evictable_(ev), arc_status_(st) {}
+  std::list<frame_id_t>::iterator iter_;
+
+  LiveEntry(page_id_t page_id, bool evictable, ArcStatus arc_status_, std::list<frame_id_t>::iterator iter) : 
+  page_id_(page_id), evictable_(evictable), arc_status_(arc_status_), iter_(iter) {}
+};
+
+struct GhostEntry {
+  ArcStatus arc_status_;
+  std::list<page_id_t>::iterator iter_;
+
+  GhostEntry(ArcStatus arc_status_, std::list<page_id_t>::iterator iter) :
+  arc_status_(arc_status_), iter_(iter) {}
 };
 
 /**
@@ -62,6 +71,15 @@ class ArcReplacer {
 
  private:
   // TODO(student): implement me! You can replace or remove these member variables as you like.
+  void RemoveGhost(page_id_t page_id);
+  void PushGhostFront(page_id_t page_id, ArcStatus ghost_status);
+  void MoveAliveToMFU(frame_id_t frame_id);
+  void InsertAliveToMFU(page_id_t page_id, frame_id_t frame_id);
+  void InsertAliveTOMRU(page_id_t page_id, frame_id_t frame_id);
+  auto EvictFromList(std::list<frame_id_t> &lst, ArcStatus ghost_status) -> std::optional<frame_id_t>;
+  void TrimGhostIfNeeded();
+
+  
   std::list<frame_id_t> mru_;
   std::list<frame_id_t> mfu_;
   std::list<page_id_t> mru_ghost_;
@@ -70,11 +88,11 @@ class ArcReplacer {
   /* record entries in mru_ and mfu_
    * this uses frame_id_t to guarantee no duplicate records for the same
    * frame when they are alive */
-  std::unordered_map<frame_id_t, std::shared_ptr<FrameStatus>> alive_map_;
+  std::unordered_map<frame_id_t, LiveEntry> alive_map_;
   /* record entries in mru_ghost_ and mfu_ghost_
    * this uses page_id_t but not frame_id_t because page_id is the unique
    * identifier in ghost lists */
-  std::unordered_map<page_id_t, std::shared_ptr<FrameStatus>> ghost_map_;
+  std::unordered_map<page_id_t, GhostEntry> ghost_map_;
 
   /* alive, evictable entries count */
   [[maybe_unused]] size_t curr_size_{0};

@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdarg>
+#include <cstdint>
 #include <cstring>
 #include <iomanip>
 #include <memory>

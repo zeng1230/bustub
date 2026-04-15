@@ -88,6 +88,8 @@ class FrameHeader {
    */
   std::vector<char> data_;
 
+  std::optional<page_id_t> page_id_;
+
   /**
    * TODO(P1): You may add any fields or helper functions under here that you think are necessary.
    *
@@ -125,6 +127,7 @@ class BufferPoolManager {
   void FlushAllPagesUnsafe();
   void FlushAllPages();
   auto GetPinCount(page_id_t page_id) -> std::optional<size_t>;
+  auto GetAvailableFrame() -> std::optional<frame_id_t>;
 
  private:
   /** @brief The number of frames in the buffer pool. */

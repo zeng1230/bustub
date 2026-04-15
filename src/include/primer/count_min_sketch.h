@@ -16,6 +16,7 @@
 #include <functional>
 #include <utility>
 #include <vector>
+#include <mutex>
 
 #include "common/util/hash_util.h"
 
@@ -82,6 +83,8 @@ class CountMinSketch {
   /** Dimensions of the count-min sketch matrix */
   uint32_t width_;  // Number of buckets for each hash function
   uint32_t depth_;  // Number of independent hash functions
+  std::vector<uint32_t> matrix_;
+  std::unique_ptr<std::mutex[]> locks_;
   /** Pre-computed hash functions for each row */
   std::vector<std::function<size_t(const KeyType &)>> hash_functions_;
 

@@ -59,6 +59,16 @@ void B_PLUS_TREE_INTERNAL_PAGE_TYPE::SetKeyAt(int index, const KeyType &key) {
   key_array_[index] = key;
 }
 
+INDEX_TEMPLATE_ARGUMENTS
+auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::ValueIndex(const ValueType &value) const -> int {
+  for(int i = 0; i < GetSize(); i++) {
+    if( page_id_array_[i] == value ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 /**
  * @brief Helper method to get the value associated with input "index"(a.k.a array
  * offset)
@@ -69,6 +79,11 @@ void B_PLUS_TREE_INTERNAL_PAGE_TYPE::SetKeyAt(int index, const KeyType &key) {
 INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::ValueAt(int index) const -> ValueType {
   return page_id_array_[index];
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_INTERNAL_PAGE_TYPE::SetValueAt(int index, const ValueType &value) {
+  page_id_array_[index] = value;
 }
 
 // valuetype for internalNode should be page id_t

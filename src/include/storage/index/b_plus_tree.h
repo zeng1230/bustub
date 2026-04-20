@@ -118,6 +118,8 @@ class BPlusTree {
 
   void BatchOpsFromFile(const std::filesystem::path &file_name);
 
+  void InsertIntoParent(Context &ctx, page_id_t old_node_id, const KeyType &key, page_id_t new_node_id);
+
   // Do not change this type to a BufferPoolManager!
   std::shared_ptr<TracedBufferPoolManager> bpm_;
 

@@ -31,20 +31,24 @@ class IndexIterator {
  public:
   // you may define your own constructor based on your member variables
   IndexIterator();
+  IndexIterator(ReadPageGuard guard, int index, std::shared_ptr<TracedBufferPoolManager> bpm);
   ~IndexIterator();  // NOLINT
 
-  auto IsEnd() -> bool;
+  auto IsEnd() const -> bool;
 
   auto operator*() -> std::pair<const KeyType &, const ValueType &>;
 
   auto operator++() -> IndexIterator &;
 
-  auto operator==(const IndexIterator &itr) const -> bool { UNIMPLEMENTED("TODO(P2): Add implementation."); }
+  auto operator==(const IndexIterator &itr) const -> bool;
 
-  auto operator!=(const IndexIterator &itr) const -> bool { UNIMPLEMENTED("TODO(P2): Add implementation."); }
+  auto operator!=(const IndexIterator &itr) const -> bool;
 
  private:
   // add your own private member variables here
+  ReadPageGuard guard_;
+  int index_{0};
+  std::shared_ptr<TracedBufferPoolManager> bpm_{nullptr};
 };
 
 }  // namespace bustub

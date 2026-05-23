@@ -27,10 +27,12 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <queue>
 #include <shared_mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "common/config.h"
@@ -91,6 +93,8 @@ class BPlusTree {
   // Remove a key and its value from this B+ tree.
   void Remove(const KeyType &key);
 
+  void HandleUnderflow(Context &ctx, page_id_t page_id, BPlusTreePage *page);
+
   // Return the value associated with a given key
   auto GetValue(const KeyType &key, std::vector<ValueType> *result) -> bool;
 
@@ -137,6 +141,8 @@ class BPlusTree {
   int leaf_max_size_;
   int internal_max_size_;
   page_id_t header_page_id_;
+  mutable std::mutex tree_latch_;
+  std::unordered_set<int64_t> deleted_keys_;
 };
 
 /**

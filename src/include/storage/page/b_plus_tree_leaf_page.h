@@ -76,6 +76,15 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   void SetKeyAt(int index, const KeyType &key);
   auto ValueAt(int index) const -> const ValueType &;
   void SetValueAt(int index, const ValueType &value);
+  auto GetTombstoneCount() const -> int;
+  auto IsTombstoned(int index) const -> bool;
+  auto GetOldestTombstoneIndex() const -> int;
+  auto GetTombstoneIndexAt(int i) const -> int;
+  void PushTombstone(int index);
+  void ApplyOldestTombstone();
+  void ClearTombstones();
+  void RemoveTombstone(int index);
+  void ShiftTombstones(int offest);
 
   /**
    * @brief for test only return a string representing all keys in

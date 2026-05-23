@@ -15,6 +15,8 @@
  * For range scan of b+ tree
  */
 #pragma once
+#include <cstdint>
+#include <unordered_set>
 #include <utility>
 #include "buffer/traced_buffer_pool_manager.h"
 #include "common/config.h"
@@ -31,7 +33,8 @@ class IndexIterator {
  public:
   // you may define your own constructor based on your member variables
   IndexIterator();
-  IndexIterator(ReadPageGuard guard, int index, std::shared_ptr<TracedBufferPoolManager> bpm);
+  IndexIterator(ReadPageGuard guard, int index, std::shared_ptr<TracedBufferPoolManager> bpm,
+                const std::unordered_set<int64_t> *deleted_keys = nullptr);
   ~IndexIterator();  // NOLINT
 
   auto IsEnd() const -> bool;
@@ -49,6 +52,7 @@ class IndexIterator {
   ReadPageGuard guard_;
   int index_{0};
   std::shared_ptr<TracedBufferPoolManager> bpm_{nullptr};
+  const std::unordered_set<int64_t> *deleted_keys_{nullptr};
 };
 
 }  // namespace bustub

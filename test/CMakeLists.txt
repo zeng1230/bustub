@@ -33,6 +33,7 @@ foreach (bustub_test_source ${BUSTUB_TEST_SOURCES})
             EXTRA_ARGS
             --gtest_output=xml:${CMAKE_BINARY_DIR}/test/${bustub_test_name}.xml
             --gtest_catch_exceptions=0
+            DISCOVERY_MODE PRE_TEST
             DISCOVERY_TIMEOUT 120
             PROPERTIES
             TIMEOUT 120

@@ -33,8 +33,8 @@ class IndexIterator {
  public:
   // you may define your own constructor based on your member variables
   IndexIterator();
-  IndexIterator(ReadPageGuard guard, int index, std::shared_ptr<TracedBufferPoolManager> bpm,
-                const std::unordered_set<int64_t> *deleted_keys = nullptr);
+  IndexIterator(ReadPageGuard guard, int index, std::shared_ptr<TracedBufferPoolManager> bpm
+                );
   ~IndexIterator();  // NOLINT
 
   auto IsEnd() const -> bool;
@@ -52,7 +52,6 @@ class IndexIterator {
   ReadPageGuard guard_;
   int index_{0};
   std::shared_ptr<TracedBufferPoolManager> bpm_{nullptr};
-  const std::unordered_set<int64_t> *deleted_keys_{nullptr};
 };
 
 }  // namespace bustub

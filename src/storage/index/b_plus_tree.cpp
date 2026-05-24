@@ -55,28 +55,23 @@ auto BPLUSTREE_TYPE::IsEmpty() const -> bool {
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result) -> bool {
-  std::lock_guard<std::mutex> lock(tree_latch_);
-  if (deleted_keys_.count(key.ToString()) != 0) {
-    return false;
-  }
-    // Declaration of context instance. Using the Context is not necessary but advised.
   Context ctx;
   if(IsEmpty()) {
     return false;
   }
 
-  // 1. Acquire the header lock
+  // 1. 获取 Header 锁
   ReadPageGuard curr_guard = bpm_->ReadPage(header_page_id_);
   const auto *header = curr_guard.As<const BPlusTreeHeaderPage>();
   page_id_t curr_page_id = header->root_page_id_;
   if (curr_page_id == INVALID_PAGE_ID) return false; 
 
   while (true) {
-    // 2. Acquire the lock for the next level
+    // 2. 读螃蟹锁：先拿下一层锁
     ReadPageGuard next_guard = bpm_->ReadPage(curr_page_id);
     const auto *page = next_guard.As<const BPlusTreePage>();
 
-    // 3. Crabbing protocol core: release the parent lock after acquiring child lock
+    // 3. 释放父锁
     curr_guard.Drop();
 
     if (page->IsLeafPage()) {
@@ -93,14 +88,13 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
     const auto *internal = next_guard.As<const InternalPage>();
     int size = internal->GetSize();
     page_id_t next_page_id = internal->ValueAt(size - 1);
-    for (int i = 1; i < size; i++) {
+    for (int i = 1; i < size; i++) { 
       if (comparator_(key, internal->KeyAt(i)) < 0) {
         next_page_id = internal->ValueAt(i - 1);
         break;
       }
     }
     curr_page_id = next_page_id;
-    // 4. Transfer the current lock to the next iteration
     curr_guard = std::move(next_guard);
   } 
 }
@@ -121,39 +115,31 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool {
-  std::lock_guard<std::mutex> lock(tree_latch_);
-  deleted_keys_.erase(key.ToString());
-  // Declaration of context instance. Using the Context is not necessary but advised.
   Context ctx;
   ctx.header_page_ = bpm_->WritePage(header_page_id_);
   auto *header_page = ctx.header_page_->AsMut<BPlusTreeHeaderPage>();
   ctx.root_page_id_ = header_page->root_page_id_;
 
-  // 1. empty tree : create root leaf page
   if(ctx.root_page_id_ == INVALID_PAGE_ID) {
     page_id_t new_root_id = bpm_->NewPage();
-
     {
       auto root_guard = bpm_->WritePage(new_root_id);
       auto *leaf = root_guard.AsMut<LeafPage>();
-
       leaf->Init(leaf_max_size_);
       leaf->SetKeyAt(0,key);
       leaf->SetValueAt(0,value);
       leaf->SetSize(1);
     }
-
     header_page->root_page_id_ = new_root_id;
-
     return true;
   }
 
-  // 2. find targer lead page
   page_id_t curr_page_id = ctx.root_page_id_;
   while(true) {
     auto guard = bpm_->WritePage(curr_page_id);
     auto *page = guard.AsMut<BPlusTreePage>();
 
+    // 【写螃蟹锁】：如果节点安全，释放所有上层锁，极大提高高并发性能
     if (page->GetSize() < page->GetMaxSize()) {
       ctx.write_set_.clear();
       ctx.header_page_ = std::nullopt;
@@ -163,13 +149,11 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
       auto *leaf = guard.AsMut<LeafPage>();
       int size = leaf->GetSize();
       
-      // 2.1 find insert position
       int pos = 0;
       while(pos < size && comparator_(leaf->KeyAt(pos),key) < 0) {
         pos++;
       }
 
-      // duplicate key
       if(pos < size && comparator_(leaf->KeyAt(pos),key) == 0) {
         if(leaf->IsTombstoned(pos)) {
           leaf->SetValueAt(pos, value);
@@ -179,7 +163,6 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
         return false;
       }
 
-      // 2.2 simple insert only : lead must have space
       if(size < leaf->GetMaxSize()) {
         for(int i = size; i > pos; i--) {
           leaf->SetKeyAt(i,leaf->KeyAt(i - 1));
@@ -190,20 +173,19 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
         leaf->SetValueAt(pos, value);
         leaf->SetSize(size + 1);
 
+        // 墓碑平移修正
         std::vector<int> t_idxs;
-        for (int i = 0; i < leaf->GetTombstoneCount(); i++ ) {
+        for (int i = 0; i < leaf->GetTombstoneCount(); i++) {
           int t_idx = leaf->GetTombstoneIndexAt(i);
-          t_idxs.push_back(t_idx > pos ? t_idx + 1 : t_idx);
+          t_idxs.push_back(t_idx >= pos ? t_idx + 1 : t_idx);
         }
         leaf->ClearTombstones();
         for (int x : t_idxs) {
-            leaf->PushTombstone(x);
+          leaf->PushTombstone(x);
         }
         return true;
       }
-      
 
-      // 2.3 leaf full : split
       std::vector<KeyType> temp_keys;
       std::vector<ValueType> temp_values;
       std::vector<int> old_tomb_idxs;
@@ -212,10 +194,9 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
 
       for (int i = 0; i < leaf->GetTombstoneCount(); i++) {
         int t_idx = leaf->GetTombstoneIndexAt(i);
-        old_tomb_idxs.push_back(t_idx > pos ? t_idx + 1 : t_idx);
+        old_tomb_idxs.push_back(t_idx >= pos ? t_idx + 1 : t_idx);
       }
 
-      // merge old data + new kv into temp arrays in sorted order
       for(int i = 0; i < pos; i++) {
         temp_keys.push_back(leaf->KeyAt(i));
         temp_values.push_back(leaf->ValueAt(i));
@@ -234,18 +215,15 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
       auto *new_leaf = new_leaf_guard.AsMut<LeafPage>();
       new_leaf->Init(leaf_max_size_);
 
-      // split points
       int total = size + 1;
       int mid = total / 2;
 
-      // write lefr half back to old leaf
       for(int i = 0; i < mid; i++) {
         leaf->SetKeyAt(i, temp_keys[i]);
         leaf->SetValueAt(i, temp_values[i]);
       }
       leaf->SetSize(mid);
 
-      // write right to new lead
       for(int i = mid; i < total; i++) {
         new_leaf->SetKeyAt(i - mid, temp_keys[i]);
         new_leaf->SetValueAt(i - mid, temp_values[i]);
@@ -263,14 +241,10 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
         }
       }
 
-      // maintain leaf sibling poters
       new_leaf->SetNextPageId(leaf->GetNextPageId());
       leaf->SetNextPageId(new_leaf_id);
 
-      // sperator key is first key in new right leaf
       KeyType split_key = new_leaf->KeyAt(0);
-
-      // if current leaf is root, create a new internal page
       InsertIntoParent(ctx, old_leaf_id, split_key, new_leaf_id);
       return true;
     }
@@ -305,16 +279,12 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value) -> bool 
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 void BPLUSTREE_TYPE::Remove(const KeyType &key) {
-  std::lock_guard<std::mutex> lock(tree_latch_);
-  deleted_keys_.insert(key.ToString());
-  // Declaration of context instance.
   Context ctx;
-
   if (IsEmpty()) {
     return;
   }
 
-  // 1. Write-latching travesal to find target leaf page and keep parent
+  // 1. Write-latching traversal to find target leaf page and keep parent
   ctx.header_page_ = bpm_->WritePage(header_page_id_);
   auto *header_page = ctx.header_page_->AsMut<BPlusTreeHeaderPage>();
   ctx.root_page_id_ = header_page->root_page_id_;
@@ -324,6 +294,19 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
   while (true) {
     auto guard = bpm_->WritePage(curr_page_id);
     const auto *page = guard.template As<BPlusTreePage>();
+
+    // 【写螃蟹锁】：如果删除安全，释放所有上层锁
+    bool is_safe = false;
+    if (curr_page_id == ctx.root_page_id_) {
+      is_safe = page->IsLeafPage() ? page->GetSize() > 1 : page->GetSize() > 2;
+    } else {
+      is_safe = page->GetSize() > page->GetMinSize();
+    }
+
+    if (is_safe) {
+      ctx.write_set_.clear();
+      ctx.header_page_ = std::nullopt;
+    }
 
     if (page->IsLeafPage()) {
       leaf_guard = std::move(guard);
@@ -345,7 +328,7 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
     curr_page_id = next_page_id;
   }
 
-  // 2. write only the target leaf page
+  // 2. 直接使用已经通过 std::move 完美持有写锁的 leaf_guard
   auto *leaf = leaf_guard.AsMut<LeafPage>();
 
   int pos = -1;
@@ -367,36 +350,62 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
       leaf->SetValueAt(i, leaf->ValueAt(i + 1));
     }
     leaf->SetSize(leaf->GetSize() - 1);
-  } else if (leaf->GetTombstoneCount() == LEAF_PAGE_TOMB_CNT) {
-    int oldest = leaf->GetOldestTombstoneIndex();
-    leaf->ApplyOldestTombstone();
 
-    if (oldest != -1 && oldest < pos) {
-      pos--;
+    // 【物理删除后的首 Key 物理路由更新传播】
+    if (!ctx.write_set_.empty() && leaf->GetSize() > 0) {
+      page_id_t child_id = curr_page_id;
+      KeyType first_key = leaf->KeyAt(0);
+      for (auto iter = ctx.write_set_.rbegin(); iter != ctx.write_set_.rend(); ++iter) {
+        auto *parent = iter->AsMut<InternalPage>();
+        int child_idx = parent->ValueIndex(child_id);
+        if (child_idx > 0) {
+          parent->SetKeyAt(child_idx, first_key);
+          break;
+        }
+        child_id = iter->GetPageId();
+      }
+    }
+    
+    if (leaf->GetSize() < leaf->GetMinSize() && curr_page_id != ctx.root_page_id_) {
+      HandleUnderflow(ctx, curr_page_id, leaf);
+    }
+    
+  } else {
+    if (leaf->GetTombstoneCount() == LEAF_PAGE_TOMB_CNT) {
+      int oldest = leaf->GetOldestTombstoneIndex();
+      leaf->ApplyOldestTombstone();
+
+      if (oldest != -1 && oldest < pos) {
+        pos--;
+      }
     }
 
     leaf->PushTombstone(pos);
-  } else {
-    leaf->PushTombstone(pos);
-  }
 
-  if (!ctx.write_set_.empty() && leaf->GetSize() > 0) {
-    page_id_t child_id = curr_page_id;
-    KeyType first_key = leaf->KeyAt(0);
-    for (auto iter = ctx.write_set_.rbegin(); iter != ctx.write_set_.rend(); ++iter) {
-      auto *parent = iter->AsMut<InternalPage>();
-      int child_idx = parent->ValueIndex(child_id);
-      if (child_idx > 0) {
-        parent->SetKeyAt(child_idx, first_key);
-        break;
+    // 【墓碑逻辑删除后的首 Key 物理路由更新传播】
+    if (!ctx.write_set_.empty() && leaf->GetSize() > 0) {
+      page_id_t child_id = curr_page_id;
+      KeyType first_key = leaf->KeyAt(0);
+      for (auto iter = ctx.write_set_.rbegin(); iter != ctx.write_set_.rend(); ++iter) {
+        auto *parent = iter->AsMut<InternalPage>();
+        int child_idx = parent->ValueIndex(child_id);
+        if (child_idx > 0) {
+          parent->SetKeyAt(child_idx, first_key);
+          break;
+        }
+        child_id = iter->GetPageId();
       }
-      child_id = iter->GetPageId();
+    }
+
+    // underflow check
+    if (leaf->GetSize() < leaf->GetMinSize() && curr_page_id != ctx.root_page_id_) {
+      HandleUnderflow(ctx, curr_page_id, leaf);
     }
   }
 
   // 3. if root leaf becomes empty, update header
   if (curr_page_id == ctx.root_page_id_ && leaf->GetSize() == 0) {
-    leaf_guard.Drop();
+    leaf_guard.Drop(); 
     if (!ctx.header_page_.has_value()) {
       ctx.header_page_ = bpm_->WritePage(header_page_id_);
     }
@@ -408,7 +417,7 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key) {
 FULL_INDEX_TEMPLATE_ARGUMENTS
 void BPLUSTREE_TYPE::HandleUnderflow(Context &ctx, page_id_t page_id, BPlusTreePage *page) {
   if (ctx.write_set_.empty()) {
-    return; // Root node doesn't need to be merged with siblings
+    return;
   }
 
   auto &parent_guard = ctx.write_set_.back();
@@ -477,6 +486,7 @@ void BPLUSTREE_TYPE::HandleUnderflow(Context &ctx, page_id_t page_id, BPlusTreeP
       }
       leaf->SetSize(orig_size + right->GetSize());
 
+      // 【物理结构修复】：精准进行跨节点墓碑偏移计算与维护
       std::vector<int> right_tombs;
       for (int i = 0; i < right->GetTombstoneCount(); i++) {
         right_tombs.push_back(orig_size + right->GetTombstoneIndexAt(i));
@@ -516,8 +526,9 @@ void BPLUSTREE_TYPE::HandleUnderflow(Context &ctx, page_id_t page_id, BPlusTreeP
         parent->SetKeyAt(index_in_parent, leaf->KeyAt(0));
       }
 
+      // 【物理合并修复】：只有当父节点确实是根节点，且只剩一个孩子时，才进行 Root 收缩
       if (parent_guard.GetPageId() == ctx.root_page_id_ && parent->GetSize() == 1) {
-        if ( !ctx.header_page_.has_value()) {
+        if (!ctx.header_page_.has_value()) {
           ctx.header_page_ = bpm_->WritePage(header_page_id_);
         }
 
@@ -571,6 +582,7 @@ void BPLUSTREE_TYPE::HandleUnderflow(Context &ctx, page_id_t page_id, BPlusTreeP
       }
       left->SetSize(orig_left_size + leaf->GetSize());
 
+      // 【物理结构修复】：精准进行跨节点墓碑偏移计算与维护
       std::vector<int> leaf_tombs;
       for (int i = 0; i < leaf->GetTombstoneCount(); i++) {
         leaf_tombs.push_back(orig_left_size + leaf->GetTombstoneIndexAt(i));
@@ -611,7 +623,8 @@ void BPLUSTREE_TYPE::HandleUnderflow(Context &ctx, page_id_t page_id, BPlusTreeP
         parent->SetKeyAt(index_in_parent - 1, left->KeyAt(0));
       }
 
-      if ( parent_guard.GetPageId() == ctx.root_page_id_ && parent->GetSize() == 1) {
+      // 【物理合并修复】：只有当父节点确实是根节点，且只剩一个孩子时，才进行 Root 收缩
+      if (parent_guard.GetPageId() == ctx.root_page_id_ && parent->GetSize() == 1) {
         if (!ctx.header_page_.has_value()) {
           ctx.header_page_ = bpm_->WritePage(header_page_id_);
         }
@@ -720,7 +733,11 @@ void BPLUSTREE_TYPE::HandleUnderflow(Context &ctx, page_id_t page_id, BPlusTreeP
   // =======================================================
   // Wrap up: Handle Root shrinkage, and recursively handle parent node underflow!
   // =======================================================
-  if (ctx.write_set_.size() == 1 && parent->GetSize() == 1) {
+  // 【物理合并修复】：只有当父节点确实是根节点，且只剩一个孩子时，才进行 Root 收缩
+  if (parent_guard.GetPageId() == ctx.root_page_id_ && parent->GetSize() == 1) {
+    if (!ctx.header_page_.has_value()) {
+      ctx.header_page_ = bpm_->WritePage(header_page_id_);
+    }
     auto *header = ctx.header_page_->AsMut<BPlusTreeHeaderPage>();
     header->root_page_id_ = parent->ValueAt(0); 
     ctx.root_page_id_ = parent->ValueAt(0);
@@ -747,23 +764,19 @@ void BPLUSTREE_TYPE::HandleUnderflow(Context &ctx, page_id_t page_id, BPlusTreeP
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE { 
-  std::lock_guard<std::mutex> lock(tree_latch_);
   if(IsEmpty()) {
     return End();
   }
 
-  // 1. Acquire the header lock
   ReadPageGuard curr_guard = bpm_->ReadPage(header_page_id_);
   const auto *header = curr_guard.As<const BPlusTreeHeaderPage>();
   page_id_t curr_page_id = header->root_page_id_;
   if (curr_page_id == INVALID_PAGE_ID) return End(); 
 
   while (true) {
-    // 2. Acquire the lock for the next level
     ReadPageGuard next_guard = bpm_->ReadPage(curr_page_id);
     const auto *page = next_guard.As<const BPlusTreePage>();
-
-    // 3. Crabbing protocol core: release the parent lock after acquiring child lock
+    
     curr_guard.Drop();
 
     if (page->IsLeafPage()) {
@@ -772,20 +785,16 @@ auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE {
       while (idx < leaf->GetSize() && leaf->IsTombstoned(idx)) {
         idx++;
       }
-
-      while (idx < leaf->GetSize() && deleted_keys_.count(leaf->KeyAt(idx).ToString()) != 0) {
-        idx++;
-      }
-
+      
       if (idx < leaf->GetSize()) {
-        return INDEXITERATOR_TYPE(std::move(next_guard), idx, bpm_, &deleted_keys_);
+        return INDEXITERATOR_TYPE(std::move(next_guard), idx, bpm_);
       }
-     
+      
       page_id_t next_leaf_page_id = leaf->GetNextPageId();
       if (next_leaf_page_id == INVALID_PAGE_ID) {
-        return End();
-      } 
-
+        return End(); 
+      }
+      
       curr_page_id = next_leaf_page_id;
       curr_guard = std::move(next_guard);
       continue;
@@ -795,7 +804,6 @@ auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE {
     curr_page_id = internal->ValueAt(0);
     curr_guard = std::move(next_guard);
   } 
-
  }
 
 /**
@@ -805,47 +813,40 @@ auto BPLUSTREE_TYPE::Begin() -> INDEXITERATOR_TYPE {
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE { 
-  std::lock_guard<std::mutex> lock(tree_latch_);
-  if (IsEmpty()) {
+   if (IsEmpty()) {
     return End();
   }
 
-  // 1. Acquire the header lock
   ReadPageGuard curr_guard = bpm_->ReadPage(header_page_id_);
   const auto *header = curr_guard.As<const BPlusTreeHeaderPage>();
   page_id_t curr_page_id = header->root_page_id_;
   if (curr_page_id == INVALID_PAGE_ID) return End(); 
 
   while (true) {
-    // 2. Acquire the lock for the next level
     ReadPageGuard next_guard = bpm_->ReadPage(curr_page_id);
     const auto *page = next_guard.As<const BPlusTreePage>();
-
-    // 3. Crabbing protocol core: release the parent lock after acquiring child lock
+    
     curr_guard.Drop();
 
     if (page->IsLeafPage()) {
       const auto *leaf = next_guard.As<const LeafPage>();
-      int pos  = 0;
+      int pos = 0;
       while (pos < leaf->GetSize() && comparator_(leaf->KeyAt(pos), key) < 0) {
         pos++;
       }
       while (pos < leaf->GetSize() && leaf->IsTombstoned(pos)) {
         pos++;
       }
-      while (pos < leaf->GetSize() && deleted_keys_.count(leaf->KeyAt(pos).ToString()) != 0) {
-        pos++;
-      }
-
+      
       if (pos < leaf->GetSize()) {
-        return INDEXITERATOR_TYPE(std::move(next_guard), pos, bpm_, &deleted_keys_);
+        return INDEXITERATOR_TYPE(std::move(next_guard), pos, bpm_);
       }
       
       page_id_t next_leaf_page_id = leaf->GetNextPageId();
       if (next_leaf_page_id == INVALID_PAGE_ID) {
         return End();
       }
-
+      
       curr_page_id = next_leaf_page_id;
       curr_guard = std::move(next_guard);
       continue;
@@ -854,14 +855,13 @@ auto BPLUSTREE_TYPE::Begin(const KeyType &key) -> INDEXITERATOR_TYPE {
     const auto *internal = next_guard.As<const InternalPage>();
     int size = internal->GetSize();
     page_id_t next_page_id = internal->ValueAt(size - 1);
-    for (int i = 1; i < size; i++) {
+    for (int i = 1; i < size; i++) { 
       if (comparator_(key, internal->KeyAt(i)) < 0) {
         next_page_id = internal->ValueAt(i - 1);
         break;
       }
     }
     curr_page_id = next_page_id;
-    // 4. Transfer the current lock to the next iteration
     curr_guard = std::move(next_guard);
   } 
  }
@@ -883,7 +883,6 @@ auto BPLUSTREE_TYPE::End() -> INDEXITERATOR_TYPE {
  */
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::GetRootPageId() -> page_id_t { 
-  std::lock_guard<std::mutex> lock(tree_latch_);
   auto guard = bpm_->ReadPage(header_page_id_);
   const auto header_page = guard.As<const BPlusTreeHeaderPage>();
   return header_page->root_page_id_; 

@@ -27,15 +27,15 @@ FULL_INDEX_TEMPLATE_ARGUMENTS
 INDEXITERATOR_TYPE::IndexIterator() = default;
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
-INDEXITERATOR_TYPE::IndexIterator(ReadPageGuard guard, int index, std::shared_ptr<TracedBufferPoolManager> bpm,
-                                  const std::unordered_set<int64_t> *deleted_keys)
-  : guard_(std::move(guard)), index_(index), bpm_(std::move(bpm)), deleted_keys_(deleted_keys) {}
+INDEXITERATOR_TYPE::IndexIterator(ReadPageGuard guard, int index, std::shared_ptr<TracedBufferPoolManager> bpm)
+  : guard_(std::move(guard)), index_(index), bpm_(bpm) {}
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 INDEXITERATOR_TYPE::~IndexIterator() = default;  // NOLINT
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto INDEXITERATOR_TYPE::IsEnd() const -> bool { 
+  // 【终极安全判断】：直接看 bpm_ 智能指针是否被我们置空，绝不触碰底层 page_guard 的任何断言方法！
   return bpm_ == nullptr;
 }
 
@@ -58,9 +58,7 @@ auto INDEXITERATOR_TYPE::operator++() -> INDEXITERATOR_TYPE & {
     const auto *leaf = guard_.As<const BPlusTreeLeafPage<KeyType, ValueType, KeyComparator, NumTombs>>();
 
     // 1. 在当前页内不断跳过墓碑 (Tombstones)
-    while (index_ < leaf->GetSize() &&
-           (leaf->IsTombstoned(index_) ||
-            (deleted_keys_ != nullptr && deleted_keys_->count(leaf->KeyAt(index_).ToString()) != 0))) {
+    while (index_ < leaf->GetSize() && leaf->IsTombstoned(index_)){
       index_++;
     }
 
@@ -72,9 +70,9 @@ auto INDEXITERATOR_TYPE::operator++() -> INDEXITERATOR_TYPE & {
     // 3. 当前页的有效元素耗尽，需要跳到下一页
     page_id_t next_page_id = leaf->GetNextPageId();
     if (next_page_id == INVALID_PAGE_ID) {
-      // 走到树的尽头了，释放锁，标记为 End
+      // 走到树的尽头了，释放锁
       guard_.Drop();
-      bpm_ = nullptr;
+      bpm_ = nullptr; // 【终极救星】：主动将自身 bpm_ 置空，表明已进入 End 状态
       return *this;
     }
 
@@ -103,13 +101,14 @@ auto INDEXITERATOR_TYPE::operator==(const IndexIterator &itr) const -> bool {
     return false;
   }
 
+  // 两个都不是 End 时，才去调用 GetPageId()，因为此时两个锁都是合法的，绝对不会触发 Assert！
   return this->index_ == itr.index_ && this->guard_.GetPageId() == itr.guard_.GetPageId();
- }
+}
 
 FULL_INDEX_TEMPLATE_ARGUMENTS
 auto INDEXITERATOR_TYPE::operator!=(const IndexIterator &itr) const -> bool { 
   return !(*this == itr);
- }
+}
 
 template class IndexIterator<GenericKey<4>, RID, GenericComparator<4>>;
 
